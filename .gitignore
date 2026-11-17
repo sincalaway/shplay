@@ -1,0 +1,29 @@
+# Dependencies and build outputs
+node_modules/
+dist/
+.vite/
+
+# Rust/Tauri
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/target-*
+
+# Mobile generated projects (created by Tauri init)
+/src-tauri/gen/android/
+/src-tauri/gen/apple/
+
+# Signing material and local environment
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+
+# Generated native projects
+/src-tauri/gen/android/
+/src-tauri/gen/apple/
+.idea/
+.vscode/
+.DS_Store

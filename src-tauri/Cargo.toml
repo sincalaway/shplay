@@ -1,0 +1,40 @@
+[package]
+name = "shplay"
+version = "0.1.0"
+description = "A cross-platform media player"
+authors = ["shplay contributors"]
+edition = "2021"
+rust-version = "1.90"
+
+[workspace]
+members = ["crates/media-core"]
+resolver = "2"
+
+[lib]
+name = "shplay_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = []
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+shplay-media-core = { path = "crates/media-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-store = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync", "io-util"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

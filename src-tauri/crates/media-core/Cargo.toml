@@ -1,0 +1,9 @@
+[package]
+name = "shplay-media-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "UNLICENSED"
+
+[dependencies]
+url = "2"
