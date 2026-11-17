@@ -9,13 +9,15 @@ shplay 使用 pnpm/Vite 构建 React UI，Tauri 2 CLI 将同一前端与 Rust �
 ```bash
 pnpm install
 pnpm build
+pnpm test:provider
 pnpm desktop:dev
 pnpm desktop:build
 ```
 
-`pnpm dev` 是普通浏览器预览，前端用 HLS.js 或 `<video>` 直连用户 URL，可能因来源 CORS/Referer 限制失败；真正的跨域媒体代理仅在 Tauri 原生运行时启动。纯安全逻辑测试不依赖桌面 SDK：
+`pnpm dev` 是普通浏览器预览，前端用 HLS.js 或 `<video>` 直连用户媒体 URL，可能因来源 CORS/Referer 限制失败；它不会发起来源 API 请求。Tauri 原生应用通过受限 IPC 请求用户配置的公开 JSON API，媒体代理也只在 Tauri 原生运行时启动。SourceProvider 单测用 Node 内建测试运行器，不访问网络；纯 Rust URL/IP/HLS 安全策略测试不依赖桌面 SDK：
 
 ```bash
+pnpm test:provider
 cargo test --manifest-path src-tauri/crates/media-core/Cargo.toml
 ```
 

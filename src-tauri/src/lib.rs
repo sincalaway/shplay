@@ -10,7 +10,10 @@ pub fn run() {
             app.manage(proxy);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![proxy::prepare_media])
+        .invoke_handler(tauri::generate_handler![
+            proxy::prepare_media,
+            proxy::fetch_provider_json
+        ])
         .run(tauri::generate_context!())
         .expect("error while running shplay");
 }

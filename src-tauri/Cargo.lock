@@ -3275,6 +3275,7 @@ dependencies = [
  "axum",
  "reqwest 0.12.28",
  "serde",
+ "serde_json",
  "shplay-media-core",
  "tauri",
  "tauri-build",

@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use reqwest::{redirect::Policy, Client};
+use serde::Deserialize;
 use shplay_media_core::{is_hls_playlist, is_public_ip, parse_http_url, rewrite_hls_playlist};
 use std::{
     collections::HashMap,
@@ -23,7 +24,11 @@ const SOURCE_TTL: Duration = Duration::from_secs(60 * 60);
 const CLIENT_TTL: Duration = Duration::from_secs(30);
 const MAX_REDIRECTS: usize = 5;
 const MAX_PLAYLIST_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PROVIDER_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PROVIDER_BODY_BYTES: usize = 64 * 1024;
+const MAX_PROVIDER_HEADERS: usize = 16;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 struct MediaSource {
@@ -142,6 +147,161 @@ pub fn prepare_media(
         });
     let id = state.insert_source(source_url, referer, origin);
     Ok(state.local_url(&id))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRequestHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[tauri::command]
+pub async fn fetch_provider_json(
+    state: tauri::State<'_, ProxyState>,
+    url: String,
+    method: String,
+    headers: Vec<ProviderRequestHeader>,
+    body: Option<String>,
+) -> Result<String, String> {
+    let url =
+        parse_http_url(&url).map_err(|_| "Enter a valid HTTP or HTTPS API URL".to_string())?;
+    let method = parse_provider_method(&method)?;
+    if headers.len() > MAX_PROVIDER_HEADERS {
+        return Err("Too many API request headers".to_string());
+    }
+    validate_provider_body(&method, body.as_deref())?;
+    let headers = validate_provider_headers(headers)?;
+    let operation = async {
+        let (mut response, _final_url) =
+            fetch_provider_upstream(&state, url, method, &headers, body.as_deref()).await?;
+        if !response.status().is_success() {
+            return Err(format!("API returned HTTP {}", response.status().as_u16()));
+        }
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !content_type.contains("json") {
+            return Err("API response is not JSON".to_string());
+        }
+        let bytes = read_limited(&mut response, MAX_PROVIDER_RESPONSE_BYTES)
+            .await
+            .map_err(|_| "API response exceeds 2 MiB or could not be read".to_string())?;
+        String::from_utf8(bytes).map_err(|_| "API response is not valid UTF-8".to_string())
+    };
+    tokio::time::timeout(PROVIDER_TIMEOUT, operation)
+        .await
+        .map_err(|_| "API request timed out after 15 seconds".to_string())?
+}
+
+fn parse_provider_method(method: &str) -> Result<reqwest::Method, String> {
+    match method.to_ascii_uppercase().as_str() {
+        "GET" => Ok(reqwest::Method::GET),
+        "POST" => Ok(reqwest::Method::POST),
+        _ => Err("Only GET and POST API requests are supported".to_string()),
+    }
+}
+
+fn validate_provider_headers(headers: Vec<ProviderRequestHeader>) -> Result<HeaderMap, String> {
+    let mut output = HeaderMap::new();
+    for entry in headers {
+        if entry.name.len() > 64 || entry.value.len() > 512 {
+            return Err("API request header is too long".to_string());
+        }
+        let name = entry.name.trim().to_ascii_lowercase();
+        if name != "accept" && name != "accept-language" {
+            return Err("Only Accept and Accept-Language API headers are supported".to_string());
+        }
+        let name = header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| "Invalid API request header".to_string())?;
+        let value = HeaderValue::from_str(&entry.value)
+            .map_err(|_| "Invalid API request header value".to_string())?;
+        if output.contains_key(&name) {
+            return Err("Duplicate API request headers are not supported".to_string());
+        }
+        output.insert(name, value);
+    }
+    Ok(output)
+}
+
+fn validate_provider_body(method: &reqwest::Method, body: Option<&str>) -> Result<(), String> {
+    let Some(body) = body else {
+        return Ok(());
+    };
+    if body.len() > MAX_PROVIDER_BODY_BYTES {
+        return Err("API request body exceeds 64 KiB".to_string());
+    }
+    if *method != reqwest::Method::POST {
+        return Err("Request bodies are supported only for POST".to_string());
+    }
+    serde_json::from_str::<serde_json::Value>(body)
+        .map(|_| ())
+        .map_err(|_| "POST request body must be valid JSON".to_string())
+}
+
+async fn fetch_provider_upstream(
+    state: &ProxyState,
+    url: Url,
+    method: reqwest::Method,
+    headers: &HeaderMap,
+    body: Option<&str>,
+) -> Result<(reqwest::Response, Url), String> {
+    let mut current = url;
+    for redirect_count in 0..=MAX_REDIRECTS {
+        let client = client_for(state, &current)
+            .await
+            .map_err(|_| "API host is unavailable or not a public network target".to_string())?;
+        let accept = headers
+            .get(&header::ACCEPT)
+            .cloned()
+            .unwrap_or_else(|| HeaderValue::from_static("application/json"));
+        let mut request = client
+            .request(method.clone(), current.clone())
+            .timeout(PROVIDER_TIMEOUT)
+            .header(header::USER_AGENT, "shplay/0.1 (JSON source provider)")
+            .header(header::ACCEPT, accept)
+            .header(header::ACCEPT_ENCODING, "identity");
+        if let Some(value) = headers.get(&header::ACCEPT_LANGUAGE) {
+            request = request.header(header::ACCEPT_LANGUAGE, value.clone());
+        }
+        if let Some(body) = body {
+            request = request
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body.to_string());
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|_| "API request failed or timed out".to_string())?;
+        if !response.status().is_redirection() {
+            return Ok((response, current));
+        }
+        let status = response.status();
+        let post_redirect_allowed = method != reqwest::Method::POST
+            || status == StatusCode::TEMPORARY_REDIRECT
+            || status == StatusCode::PERMANENT_REDIRECT;
+        if redirect_count == MAX_REDIRECTS || !post_redirect_allowed {
+            return Err("API redirect was not allowed".to_string());
+        }
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| "API redirect was invalid".to_string())?;
+        let next = current
+            .join(location)
+            .map_err(|_| "API redirect was invalid".to_string())?;
+        let next = parse_http_url(next.as_str())
+            .map_err(|_| "API redirect target was not HTTP or HTTPS".to_string())?;
+        if current.scheme() == "https" && next.scheme() != "https" {
+            return Err("HTTPS API redirects cannot downgrade to HTTP".to_string());
+        }
+        current = next;
+    }
+    Err("Too many API redirects".to_string())
 }
 
 fn normalize_header_url(raw: &str, label: &str) -> Result<String, String> {
@@ -483,5 +643,88 @@ mod tests {
         assert!(cfg!(debug_assertions) || !is_allowed_app_origin("http://localhost:1420"));
         assert!(!is_allowed_app_origin("https://attacker.example"));
         assert!(!is_allowed_app_origin("null"));
+    }
+
+    #[test]
+    fn provider_method_allows_only_get_and_post() {
+        assert_eq!(parse_provider_method("GET").unwrap(), reqwest::Method::GET);
+        assert_eq!(
+            parse_provider_method("post").unwrap(),
+            reqwest::Method::POST
+        );
+        assert!(parse_provider_method("PUT").is_err());
+        assert!(parse_provider_method("DELETE").is_err());
+    }
+
+    #[test]
+    fn provider_headers_are_strictly_allowlisted_and_unique() {
+        let allowed = validate_provider_headers(vec![
+            ProviderRequestHeader {
+                name: "Accept".into(),
+                value: "application/json".into(),
+            },
+            ProviderRequestHeader {
+                name: "Accept-Language".into(),
+                value: "zh-CN".into(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(allowed.len(), 2);
+        assert!(validate_provider_headers(vec![ProviderRequestHeader {
+            name: "Authorization".into(),
+            value: "Bearer hidden".into(),
+        }])
+        .is_err());
+        assert!(validate_provider_headers(vec![ProviderRequestHeader {
+            name: "X-Api-Key".into(),
+            value: "hidden".into(),
+        }])
+        .is_err());
+        assert!(validate_provider_headers(vec![
+            ProviderRequestHeader {
+                name: "Accept".into(),
+                value: "application/json".into()
+            },
+            ProviderRequestHeader {
+                name: "accept".into(),
+                value: "text/plain".into()
+            },
+        ])
+        .is_err());
+        assert!(validate_provider_headers(vec![ProviderRequestHeader {
+            name: "Accept".into(),
+            value: "application/json\r\nAuthorization: x".into(),
+        }])
+        .is_err());
+    }
+
+    #[test]
+    fn provider_body_requires_bounded_json_post() {
+        assert!(validate_provider_body(&reqwest::Method::GET, None).is_ok());
+        assert!(validate_provider_body(&reqwest::Method::POST, Some("{\"page\":1}")).is_ok());
+        assert!(validate_provider_body(&reqwest::Method::GET, Some("{}")).is_err());
+        assert!(validate_provider_body(&reqwest::Method::POST, Some("not-json")).is_err());
+        assert!(validate_provider_body(
+            &reqwest::Method::POST,
+            Some(&"x".repeat(MAX_PROVIDER_BODY_BYTES + 1))
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_egress_rejects_loopback_and_localhost() {
+        let state = ProxyState {
+            base_url: "http://127.0.0.1:12345".to_string(),
+            secret: "test-only".to_string(),
+            sources: Arc::new(RwLock::new(HashMap::new())),
+            clients: Arc::new(RwLock::new(HashMap::new())),
+        };
+        for raw in ["http://127.0.0.1:8080/", "http://localhost:8080/"] {
+            let url = Url::parse(raw).unwrap();
+            assert!(
+                client_for(&state, &url).await.is_err(),
+                "unexpectedly allowed {raw}"
+            );
+        }
     }
 }

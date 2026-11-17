@@ -24,11 +24,12 @@ import {
   X,
 } from "lucide-react";
 import PlayerSurface from "../features/player/PlayerSurface";
-import { readLibrary, writeLibrary } from "../shared/storage";
+import SourcesPage from "../features/sources/SourcesPage";
+import { readLibrary, readSources, writeLibrary, writeSources } from "../shared/storage";
 import { isTauri } from "@tauri-apps/api/core";
-import type { MediaEntry, PlayerStatus } from "../shared/types";
+import type { MediaEntry, PlayerStatus, ProviderSource } from "../shared/types";
 
-type View = "watch" | "library" | "settings";
+type View = "watch" | "sources" | "library" | "settings";
 
 function hostLabel(value: string): string {
   try {
@@ -44,6 +45,7 @@ function makeId(): string {
 
 function App() {
   const [library, setLibrary] = useState<MediaEntry[]>([]);
+  const [sources, setSources] = useState<ProviderSource[]>([]);
   const [current, setCurrent] = useState<MediaEntry | null>(null);
   const [view, setView] = useState<View>("watch");
   const [url, setUrl] = useState("");
@@ -64,6 +66,7 @@ function App() {
 
   useEffect(() => {
     void readLibrary().then(setLibrary);
+    void readSources().then(setSources);
   }, []);
 
   const persist = useCallback(async (next: MediaEntry[]) => {
@@ -75,6 +78,24 @@ function App() {
       setNotice("保存失败：请检查应用本地存储空间。");
     }
   }, []);
+
+  const persistSources = useCallback(async (next: ProviderSource[]) => {
+    try {
+      await writeSources(next);
+      setSources(next);
+    } catch {
+      setNotice("来源配置保存失败：请检查应用本地存储空间。");
+      throw new Error("来源配置无法写入本机存储");
+    }
+  }, []);
+
+  const saveSource = useCallback(async (source: ProviderSource) => {
+    await persistSources([source, ...sources.filter((item) => item.id !== source.id)]);
+  }, [persistSources, sources]);
+
+  const removeSource = useCallback(async (id: string) => {
+    await persistSources(sources.filter((item) => item.id !== id));
+  }, [persistSources, sources]);
 
   const playEntry = useCallback(async (entry: MediaEntry) => {
     const touched = { ...entry, lastPlayedAt: Date.now() };
@@ -133,11 +154,12 @@ function App() {
 
   const navItems: { id: View; label: string; icon: typeof MonitorPlay }[] = [
     { id: "watch", label: "播放台", icon: MonitorPlay },
+    { id: "sources", label: "来源管理", icon: Radio },
     { id: "library", label: "媒体库", icon: FolderOpen },
     { id: "settings", label: "设置", icon: Settings2 },
   ];
 
-  const pageTitle = view === "watch" ? "播放台" : view === "library" ? "媒体库" : "设置";
+  const pageTitle = view === "watch" ? "播放台" : view === "sources" ? "来源管理" : view === "library" ? "媒体库" : "设置";
   const statusLabel = status === "ready" ? "正在播放" : status === "loading" ? "连接中" : status === "error" ? "需要检查来源" : "等待媒体来源";
   const statusClass = `status-pill status-${status}`;
 
@@ -155,6 +177,7 @@ function App() {
             <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => setView(id)}>
               <Icon size={17} strokeWidth={1.8} />
               <span>{label}</span>
+              {id === "sources" && sources.length > 0 && <span className="nav-count">{sources.length}</span>}
               {id === "library" && library.length > 0 && <span className="nav-count">{library.length}</span>}
             </button>
           ))}
@@ -264,6 +287,8 @@ function App() {
               {filtered.length === 0 ? <div className="empty-library large-empty"><span className="empty-library-icon"><FolderOpen size={20} /></span><span><strong>{library.length ? "没有匹配结果" : "媒体库还是空的"}</strong><small>{library.length ? "试试其他名称或网站。" : "添加一个可访问的媒体链接，即可在多端继续播放。"}</small></span></div> : <div className="library-grid">{filtered.map((item, index) => <MediaCard key={item.id} entry={item} index={index} active={item.id === current?.id} onPlay={() => void playEntry(item)} onRemove={() => void removeEntry(item.id)} />)}</div>}
             </>
           )}
+
+          {view === "sources" && <SourcesPage sources={sources} onSave={saveSource} onDelete={removeSource} onPlay={playEntry} />}
 
           {view === "settings" && (
             <>
