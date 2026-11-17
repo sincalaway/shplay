@@ -49,4 +49,4 @@ pnpm ios:build
 
 HGhubX（[zxsos/HGhubX](https://github.com/zxsos/HGhubX)）用于研究 Tauri 2 媒体应用架构、网络传输和多平台构建。本项目按其公开文档分析模块边界，独立编写 shplay 实现；没有复制 HGhubX 源码、媒体来源或接口。研究快照、技术取舍和上游许可证说明见 [HGhubX 架构研究](docs/research-hghubx.md)。
 
-HGhubX 当前仓库采用 PolyForm Noncommercial 1.0.0，包含其 Required Notice；若未来从上游复制/改写任何代码，必须遵守该许可证及相应声明。shplay 尚未选定独立开源许可证，未授权的代码再分发权不应被默认推定。
+shplay 项目采用 Apache License 2.0，完整条款见 [LICENSE](LICENSE)。HGhubX 当前仓库采用 PolyForm Noncommercial 1.0.0，包含其 Required Notice；本项目未复制 HGhubX 代码。若未来引入上游代码，仍需单独遵守该代码适用的许可证及声明；shplay 的 Apache-2.0 许可不扩展至上游内容。
